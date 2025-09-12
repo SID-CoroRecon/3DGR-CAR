@@ -210,7 +210,7 @@ if __name__ == "__main__":
 
     # 加载数据  newdata: 最新的数据集(更新了降采样方法)    new: 之前的数据集
 
-    CCTADataset_path = r"/data/xuemingfu/PublicREPO/3dgs-car"
+    CCTADataset_path = r"/kaggle/working/ToyData"
     CCTA_test_list = ['Normal_1.mha']
 
     ##TODO: gaussian_fbp
@@ -235,15 +235,10 @@ if __name__ == "__main__":
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
     
-    gaussian_fbp_dir = r"/gaussian_fbp_result"
+    gaussian_fbp_dir = "/kaggle/working/"
     # dataset = 'CCTA' # 'CAS'
     # evaluate_gaussian_fbp(dataset, args.num_proj, gaussian_fbp_dir, op.extract(args), args)
     for num_proj in [2,4]:
         args.num_proj = num_proj
         dataset = 'CCTA'
         evaluate_gaussian_fbp(dataset, args.num_proj, gaussian_fbp_dir, op.extract(args), args)
-
-
-
-
-
