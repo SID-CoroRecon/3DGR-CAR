@@ -6,7 +6,7 @@
 #include <thrust/execution_policy.h>
 #include <thrust/sequence.h>
 
-// 常量内存声明
+// Constant memory declaration
 __constant__ int const_num_gaussians;
 __constant__ int const_grid_size_z;
 __constant__ int const_grid_size_x;
@@ -29,7 +29,7 @@ __global__ void compute_intensity_forward_kernel(
     __shared__ float centers[256][3];
     __shared__ float scales[256][3];
 
-    // 动态获取工作量
+    // Dynamically get workload
     int gaussian_idx;
     while ((gaussian_idx = atomicAdd(work_counter, 1)) < const_num_gaussians) {
         if (gaussian_idx >= const_num_gaussians) return;
@@ -119,7 +119,7 @@ torch::Tensor compute_intensity(
     const int grid_size_x = intensity_grid.size(2);
     const int grid_size_y = intensity_grid.size(3);
 
-    // 将常量数据从主机复制到设备的常量内存
+    // Copy constant data from host to device constant memory
     cudaMemcpyToSymbol(const_num_gaussians, &num_gaussians, sizeof(int));
     cudaMemcpyToSymbol(const_grid_size_z, &grid_size_z, sizeof(int));
     cudaMemcpyToSymbol(const_grid_size_x, &grid_size_x, sizeof(int));
@@ -198,12 +198,12 @@ __global__ void compute_intensity_backward_kernel(
 
     float* __restrict__ grad_gaussian_centers,
     float* __restrict__ grad_intensities, 
-    float* __restrict__ grad_inv_covariances, // 包含了scaling和rotation
+    float* __restrict__ grad_inv_covariances, // Contains scaling and rotation
     int* work_queue,
     int* work_counter
 ){
 
-    __shared__ float inv_cov[256][9]; // 假设有x个线程
+    __shared__ float inv_cov[256][9]; // Assume x threads
     __shared__ float centers[256][3];
     __shared__ float scales[256][3];
 
@@ -317,7 +317,7 @@ std::vector<torch::Tensor> compute_intensity_backward(
     const int grid_size_x = intensity_grid.size(2);
     const int grid_size_y = intensity_grid.size(3);
 
-    // 将常量数据从主机复制到设备的常量内存
+    // Copy constant data from host to device constant memory
     cudaMemcpyToSymbol(const_num_gaussians, &num_gaussians, sizeof(int));
     cudaMemcpyToSymbol(const_grid_size_z, &grid_size_z, sizeof(int));
     cudaMemcpyToSymbol(const_grid_size_x, &grid_size_x, sizeof(int));
@@ -362,10 +362,7 @@ std::vector<torch::Tensor> compute_intensity_backward(
 }
 
 
-
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m){
     m.def("compute_intensity", &compute_intensity, "Compute Intensity (CUDA)");
     m.def("compute_intensity_backward", &compute_intensity_backward, "Compute intensity backward (CUDA)");
 }
-
-

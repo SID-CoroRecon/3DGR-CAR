@@ -1,6 +1,4 @@
-import torch
 from torch.autograd import Function
-# import torch.utils.cpp_extension
 from torch.utils.cpp_extension import load
 
 

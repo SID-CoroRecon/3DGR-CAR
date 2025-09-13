@@ -1,7 +1,6 @@
 import numpy as np
-import torch
 import torch.nn as nn
-import torch.nn.functional as F
+
 import odl
 from odl.contrib import torch as odl_torch
 
@@ -37,13 +36,11 @@ class Initialization_ConeBeam:
         ## Detector
         self.param['sh'] = self.param['sx']*(1500/1000)
         self.param['sw'] = self.param['sy']*(1500/1000)
-        # self.param['sw'] = np.sqrt(self.param['sx']**2+self.param['sy']**2)*(1500/1000)
-        # self.param['sw'] = np.sqrt(self.param['sx']+self.param['sy'])*(1500/1000)
         self.param['nh'] = proj_size[0] # shape of sinogram is proj_size*proj_size
         self.param['nw'] = proj_size[1]
         self.param['dde'] = 500*self.reso # distance between origin and detector center (assume in x axis)
         self.param['dso'] = 1000*self.reso # distance between origin and source (assume in x axis)
-        # self.param['dso'] = 1000*self.reso # distance between origin and source (assume in x axis)
+
 
 def build_conebeam_gemotry(param):
     # Reconstruction space:
@@ -91,7 +88,7 @@ class Projection_ConeBeam(nn.Module):
         self.reso = param.reso
 
         # RayTransform operator
-        reco_space, ray_trafo, FBPOper = build_conebeam_gemotry(self.param)
+        _, ray_trafo, _ = build_conebeam_gemotry(self.param)
 
         # Wrap pytorch module
         self.trafo = odl_torch.OperatorModule(ray_trafo)
@@ -115,12 +112,9 @@ class FBP_ConeBeam(nn.Module):
         self.param = param
         self.reso = param.reso
 
-        reco_space, ray_trafo, FBPOper = build_conebeam_gemotry(self.param)
+        _, _, FBPOper = build_conebeam_gemotry(self.param)
 
         self.fbp = odl_torch.OperatorModule(FBPOper)
-        # 创建一个包含滤波器的FBP操作
-        # self.fbp = odl.tomo.fbp_op(ray_trafo, filter_type='Ram-Lak', frequency_scaling=30)
-        # self.fbp = odl.tomo.fbp_op(ray_trafo, filter_type='Shepp-Logan', frequency_scaling=30)
 
     def forward(self, x):
         x = self.fbp(x)
@@ -137,10 +131,8 @@ class ConeBeam3DProjector():
         self.image_size = image_size
         self.proj_size = proj_size
         self.num_proj = num_proj
-        # self.start_angle = np.pi / float(self.num_proj * 2.0) * (self.num_proj - 1.0)
         self.start_angle = start_angle
         self.raw_reso = 0.7
-        # self.raw_reso = 0.5
 
         # Initialize required parameters for image, view, detector
         geo_param = Initialization_ConeBeam(image_size=self.image_size,
@@ -173,17 +165,3 @@ class ConeBeam3DProjector():
         volume = self.fbp(projs)
 
         return volume
-
-
-
-
-
-
-
-
-
-
-
-
-
-
