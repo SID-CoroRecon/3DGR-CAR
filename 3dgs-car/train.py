@@ -4,7 +4,6 @@ import copy
 import time
 import torch
 import numpy as np
-import nibabel as nib
 import torch.backends.cudnn as cudnn
 from torch.nn.functional import mse_loss
 
@@ -29,9 +28,16 @@ def evaluate_gaussian_fbp(dataset_path, num_proj, save_dir, opt, args):
 
     dataset = torch.load(dataset_path)['volume'].cuda()
     models_no = dataset.shape[0]
+    
+    # Limit the number of models to train if max_models is specified
+    if args.max_models is not None:
+        models_no = min(models_no, args.max_models)
+        print(f"Training on {models_no} models (limited by --max_models parameter)")
+    else:
+        print(f"Training on all {models_no} models in the dataset")
 
     for model in range(models_no):
-        print("Start to evaluate model " + str(model) + " with " + str(num_proj) + " views")
+        print("Start to evaluate model " + str(model) + "/" + str(models_no) + " with " + str(num_proj) + " views")
         best_psnr, patient, best_iter = 0, 0, 0
 
         # prepare gaussian model
@@ -104,18 +110,24 @@ def evaluate_gaussian_fbp(dataset_path, num_proj, save_dir, opt, args):
         # evaluate voxel result
         fbp_recon = train_output.transpose(1,4).squeeze(1).detach()
 
-        # save fbp_recon
+        # save fbp_recon in numpy format
         fbp_recon_saved = fbp_recon.squeeze(0).detach().cpu().numpy()
-        fbp_recon_saved = nib.Nifti1Image(fbp_recon_saved, np.eye(4))
-        nib.save(fbp_recon_saved, os.path.join(save_dir, "recon_" + str(model) + "_views_" + str(num_proj) + '.nii.gz'))
+        np.save(os.path.join(save_dir, "recon_" + str(model) + "_views_" + str(num_proj) + '.npy'), fbp_recon_saved)
+        
+        # Also save ground truth volume in numpy format for comparison
+        gt_volume_saved = gt_volume.squeeze(0).detach().cpu().numpy()
+        np.save(os.path.join(save_dir, "gt_volume_" + str(model) + ".npy"), gt_volume_saved)
 
         #generate new projs
         new_projs_tr = ct_projector_new.forward_project(fbp_recon)
         new_projs_gt = ct_projector_new.forward_project(gt_volume)
 
-        # save new_projs to torch pt file
-        torch.save(new_projs_tr, os.path.join(save_dir, "recon_" + str(model) + "_views_" + str(num_proj) + '_new_projs_train.pt'))
-        torch.save(new_projs_gt, os.path.join(save_dir, "recon_" + str(model) + "_views_" + str(num_proj) + '_new_projs_label.pt'))
+        # save new_projs in numpy format
+        new_projs_tr_saved = new_projs_tr.detach().cpu().numpy()
+        new_projs_gt_saved = new_projs_gt.detach().cpu().numpy()
+        
+        np.save(os.path.join(save_dir, "recon_" + str(model) + "_views_" + str(num_proj) + '_new_projs_train.npy'), new_projs_tr_saved)
+        np.save(os.path.join(save_dir, "recon_" + str(model) + "_views_" + str(num_proj) + '_new_projs_label.npy'), new_projs_gt_saved)
 
 
 if __name__ == "__main__":
@@ -143,9 +155,10 @@ if __name__ == "__main__":
     parser.add_argument('--mydensity_lr', type=float, default=1e-2)
     parser.add_argument('--mysigma_lr', type=float, default=1e-2)
     
-    parser.add_argument('--max_iter', type=int, default=8000)
+    parser.add_argument('--max_iter', type=int, default=20000)
     parser.add_argument('--num_init_gaussian', type=int, default=10000)
     parser.add_argument('--num_proj', type=int, default=2)
+    parser.add_argument('--max_models', type=int, default=None, help='Maximum number of models to train. If not specified, train on all data.')
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
 
