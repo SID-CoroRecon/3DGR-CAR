@@ -26,6 +26,7 @@ def evaluate_gaussian_fbp(dataset_folder, num_proj, save_dir, opt, args):
     proj_size = [128] * 3
     ct_projector_train = ConeBeam3DProjector(image_size, proj_size, num_proj)
     ct_projector_new = ConeBeam3DProjector(image_size, proj_size, num_proj, start_angle=5)
+    os.makedirs(save_dir, exist_ok=True)
 
     # Determine the range of models to train on
     if args.model_range is not None:
@@ -185,6 +186,6 @@ if __name__ == "__main__":
 
     # Set dataset path from arguments
     dataset_path = args.dataset_folder
-    save_dir = "/kaggle/working/"
+    save_dir = "/kaggle/working/results/"
 
     evaluate_gaussian_fbp(dataset_path, args.num_proj, save_dir, op.extract(args), args)
