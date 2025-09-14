@@ -2,6 +2,7 @@ import os
 import sys
 import copy
 import time
+import glob
 import torch
 import numpy as np
 import torch.backends.cudnn as cudnn
@@ -20,33 +21,52 @@ def create_grid_3d(c, h, w):
     grid = torch.stack([grid_z, grid_y, grid_x], dim=-1)
     return grid
 
-def evaluate_gaussian_fbp(dataset_path, num_proj, save_dir, opt, args):
+def evaluate_gaussian_fbp(dataset_folder, num_proj, save_dir, opt, args):
     image_size = [128] * 3
     proj_size = [128] * 3
     ct_projector_train = ConeBeam3DProjector(image_size, proj_size, num_proj)
     ct_projector_new = ConeBeam3DProjector(image_size, proj_size, num_proj, start_angle=5)
 
-    dataset = torch.load(dataset_path)['volume'].cuda()
-    models_no = dataset.shape[0]
-    
-    # Limit the number of models to train if max_models is specified
-    if args.max_models is not None:
-        models_no = min(models_no, args.max_models)
-        print(f"Training on {models_no} models (limited by --max_models parameter)")
+    # Determine the range of models to train on
+    if args.model_range is not None:
+        start_model, end_model = args.model_range
+        model_indices = list(range(start_model, end_model + 1))  # inclusive range
+        print(f"Training on models {start_model} to {end_model} (range specified)")
     else:
-        print(f"Training on all {models_no} models in the dataset")
+        # Find all .npy files in the dataset folder
+        npy_files = glob.glob(os.path.join(dataset_folder, "*.npy"))
+        model_indices = []
+        for file in npy_files:
+            filename = os.path.basename(file)
+            if filename.replace('.npy', '').isdigit():
+                model_indices.append(int(filename.replace('.npy', '')))
+        model_indices.sort()
+        print(f"Training on all {len(model_indices)} models found in dataset folder")
+    
+    if not model_indices:
+        print("No valid model files found!")
+        return
 
-    for model in range(models_no):
-        print("Start to evaluate model " + str(model) + "/" + str(models_no) + " with " + str(num_proj) + " views")
+    for i, model_id in enumerate(model_indices):
+        print(f"Start to evaluate model {model_id} ({i+1}/{len(model_indices)}) with {num_proj} views")
         best_psnr, patient, best_iter = 0, 0, 0
+
+        # Load GT volume from individual numpy file
+        model_path = os.path.join(dataset_folder, f"{model_id}.npy")
+        if not os.path.exists(model_path):
+            print(f"Model file {model_path} not found, skipping...")
+            continue
+            
+        gt_volume = torch.from_numpy(np.load(model_path)).float().cuda()
+        if gt_volume.ndim == 3:
+            gt_volume = gt_volume.unsqueeze(0)  # Add batch dimension if needed
 
         # prepare gaussian model
         opt.density_lr = args.density_lr
         opt.sigma_lr = args.sigma_lr
         gaussians = GaussianModelAnisotropic()
 
-        # volume data CAS
-        gt_volume = dataset[model].cuda()
+        input_projs = ct_projector_train.forward_project(gt_volume)   # [1, num_proj, x, y]
         input_projs = ct_projector_train.forward_project(gt_volume)   # [1, num_proj, x, y]
 
         # fbp initial gaussian model
@@ -112,11 +132,11 @@ def evaluate_gaussian_fbp(dataset_path, num_proj, save_dir, opt, args):
 
         # save fbp_recon in numpy format
         fbp_recon_saved = fbp_recon.squeeze(0).detach().cpu().numpy()
-        np.save(os.path.join(save_dir, "recon_" + str(model) + "_views_" + str(num_proj) + '.npy'), fbp_recon_saved)
+        np.save(os.path.join(save_dir, "recon_" + str(model_id) + "_views_" + str(num_proj) + '.npy'), fbp_recon_saved)
         
         # Also save ground truth volume in numpy format for comparison
         gt_volume_saved = gt_volume.squeeze(0).detach().cpu().numpy()
-        np.save(os.path.join(save_dir, "gt_volume_" + str(model) + ".npy"), gt_volume_saved)
+        np.save(os.path.join(save_dir, "gt_volume_" + str(model_id) + ".npy"), gt_volume_saved)
 
         #generate new projs
         new_projs_tr = ct_projector_new.forward_project(fbp_recon)
@@ -126,8 +146,8 @@ def evaluate_gaussian_fbp(dataset_path, num_proj, save_dir, opt, args):
         new_projs_tr_saved = new_projs_tr.detach().cpu().numpy()
         new_projs_gt_saved = new_projs_gt.detach().cpu().numpy()
         
-        np.save(os.path.join(save_dir, "recon_" + str(model) + "_views_" + str(num_proj) + '_new_projs_train.npy'), new_projs_tr_saved)
-        np.save(os.path.join(save_dir, "recon_" + str(model) + "_views_" + str(num_proj) + '_new_projs_label.npy'), new_projs_gt_saved)
+        np.save(os.path.join(save_dir, "recon_" + str(model_id) + "_views_" + str(num_proj) + '_new_projs_train.npy'), new_projs_tr_saved)
+        np.save(os.path.join(save_dir, "recon_" + str(model_id) + "_views_" + str(num_proj) + '_new_projs_label.npy'), new_projs_gt_saved)
 
 
 if __name__ == "__main__":
@@ -138,8 +158,6 @@ if __name__ == "__main__":
     os.environ['VECLIB_MAXIMUM_THREADS'] = str(cpu_num)
     os.environ['NUMEXPR_NUM_THREADS'] = str(cpu_num)
     torch.set_num_threads(cpu_num)
-
-    dataset_path = r"/kaggle/working/ToyData/Normal_1.mha_volume.pt"
 
     parser = ArgumentParser(description="Training script parameters")
     lp = ModelParams(parser)
@@ -158,10 +176,15 @@ if __name__ == "__main__":
     parser.add_argument('--max_iter', type=int, default=20000)
     parser.add_argument('--num_init_gaussian', type=int, default=10000)
     parser.add_argument('--num_proj', type=int, default=2)
-    parser.add_argument('--max_models', type=int, default=None, help='Maximum number of models to train. If not specified, train on all data.')
+    parser.add_argument('--model_range', nargs=2, type=int, default=None, 
+                       help='Range of models to train [start, end] (inclusive). Example: --model_range 900 1000')
+    parser.add_argument('--dataset_folder', type=str, default="/kaggle/working/ToyData/",
+                       help='Path to folder containing individual model .npy files')
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
 
+    # Set dataset path from arguments
+    dataset_path = args.dataset_folder
     save_dir = "/kaggle/working/"
 
     evaluate_gaussian_fbp(dataset_path, args.num_proj, save_dir, op.extract(args), args)
