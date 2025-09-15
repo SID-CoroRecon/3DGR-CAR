@@ -30,7 +30,12 @@ class Initialization_ConeBeam:
 
         ## Projection view angles (ray directions)
         self.param['start_angle'] = start_angle
-        self.param['end_angle'] = start_angle + 2*np.pi
+        # For multiple projections, distribute evenly over 180 degrees (not 360)
+        # This avoids duplicate angles at 0° and 360°
+        if num_proj == 1:
+            self.param['end_angle'] = start_angle + 0.01  # Small range for single projection
+        else:
+            self.param['end_angle'] = start_angle + np.pi  # 180 degrees for multiple projections
         self.param['nProj'] = num_proj
 
         ## Detector
@@ -52,7 +57,7 @@ def build_conebeam_gemotry(param):
     angle_partition = odl.uniform_partition(min_pt=param.param['start_angle'],
                                             max_pt=param.param['end_angle'],
                                             shape=param.param['nProj'],
-                                            nodes_on_bdry = True
+                                            nodes_on_bdry=(param.param['nProj'] == 1)  # Only include boundary for single projection
                                             )
 
     detector_partition = odl.uniform_partition(min_pt=[-(param.param['sh'] / 2.0), -(param.param['sw'] / 2.0)],

@@ -110,7 +110,7 @@ def evaluate_gaussian_fbp(dataset_folder, num_proj, save_dir, opt, args):
                     print("best_psnr: ", best_psnr)
                 else:
                     patient += 1
-                    if patient > 6:
+                    if patient > 20:
                         print("Early stopping at iteration: ", best_iter, "best_psnr: ", best_psnr)
                         break
 
