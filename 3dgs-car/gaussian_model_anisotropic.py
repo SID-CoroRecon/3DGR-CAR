@@ -121,6 +121,64 @@ class GaussianModelAnisotropic:
         self._scaling = nn.Parameter(scales.requires_grad_(True))
         self._rotation = nn.Parameter(rots.requires_grad_(True))
 
+    def create_from_gcp(self, gcp_centers, ini_density=0.04, ini_sigma=0.01, spatial_lr_scale=1, volume_size=(128, 128, 128)):
+        """
+        Create Gaussian model initialized from Gaussian Center Predictor (GCP) predictions.
+        
+        Args:
+            gcp_centers: Predicted 3D centers from GCP [N, 3]
+            ini_density: Initial density value
+            ini_sigma: Initial sigma (scaling) value
+            spatial_lr_scale: Spatial learning rate scale
+            volume_size: Size of the volume for normalization
+        """
+        self.spatial_lr_scale = spatial_lr_scale
+        
+        if isinstance(gcp_centers, torch.Tensor):
+            centers = gcp_centers.clone().detach()
+        else:
+            centers = torch.from_numpy(gcp_centers).float()
+        
+        if centers.device != torch.device('cuda'):
+            centers = centers.cuda()
+        
+        num_points = centers.shape[0]
+        
+        # Ensure centers are in [0, 1] range
+        if centers.max() > 1.0 or centers.min() < 0.0:
+            # Normalize centers to [0, 1] based on volume size
+            volume_tensor = torch.tensor(volume_size, dtype=torch.float, device=centers.device)
+            centers = centers / volume_tensor
+            centers = torch.clamp(centers, 0.0, 1.0)
+        
+        # Initialize densities - all start with the same initial density
+        densities = torch.full((num_points, 1), ini_density, device="cuda")
+        densities = inverse_sigmoid(densities)
+        
+        # Initialize scaling based on local point density
+        # Compute nearest neighbor distances for adaptive scaling
+        if num_points > 1:
+            dist2 = torch.clamp_min(distCUDA2(centers), 0.0000001)
+            scales = torch.log(torch.sqrt(dist2))[..., None].repeat(1, 3)
+            # Apply minimum scaling to avoid very small Gaussians
+            min_scale = torch.log(torch.tensor(ini_sigma, device="cuda"))
+            scales = torch.clamp(scales, min=min_scale)
+        else:
+            # Single point case
+            scales = torch.log(torch.tensor(ini_sigma, device="cuda")).repeat(num_points, 3)
+        
+        # Initialize rotations (identity quaternions)
+        rots = torch.zeros((num_points, 4), device="cuda")
+        rots[:, 0] = 1  # w component of quaternion (identity rotation)
+        
+        # Set parameters
+        self._xyz = nn.Parameter(centers.requires_grad_(True))
+        self._density = nn.Parameter(densities.requires_grad_(True))
+        self._scaling = nn.Parameter(scales.requires_grad_(True))
+        self._rotation = nn.Parameter(rots.requires_grad_(True))
+        
+        print(f"Initialized {num_points} Gaussians from GCP predictions")
+
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
 

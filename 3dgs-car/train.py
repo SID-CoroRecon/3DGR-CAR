@@ -11,6 +11,8 @@ from torch.nn.functional import mse_loss
 from arguments_init import *
 from ct_geometry_projector import ConeBeam3DProjector
 from gaussian_model_anisotropic import GaussianModelAnisotropic
+from gaussian_center_predictor import create_gcp_network
+from gaussian_losses import CombinedGaussianLoss, compute_psnr
 
 cudnn.benchmark = True
 
@@ -21,7 +23,7 @@ def create_grid_3d(c, h, w):
     grid = torch.stack([grid_z, grid_y, grid_x], dim=-1)
     return grid
 
-def evaluate_gaussian_fbp(dataset_folder, num_proj, save_dir, opt, args):
+def evaluate_gaussian(dataset_folder, num_proj, save_dir, opt, args):
     image_size = [128] * 3
     proj_size = [128] * 3
     ct_projector_train = ConeBeam3DProjector(image_size, proj_size, num_proj)
@@ -68,11 +70,57 @@ def evaluate_gaussian_fbp(dataset_folder, num_proj, save_dir, opt, args):
         gaussians = GaussianModelAnisotropic()
 
         input_projs = ct_projector_train.forward_project(gt_volume)   # [1, num_proj, x, y]
-        input_projs = ct_projector_train.forward_project(gt_volume)   # [1, num_proj, x, y]
 
-        # fbp initial gaussian model
-        fbp_recon = ct_projector_train.backward_project(input_projs)
-        gaussians.create_from_fbp(fbp_recon, air_threshold=0.05, ini_density=0.04, ini_sigma=0.01, spatial_lr_scale=1, num_samples=args.num_init_gaussian)
+        # Initialize Gaussians based on the chosen method
+        if args.init_method == 'gcp' and args.gcp_model_path and os.path.exists(args.gcp_model_path):
+            print(f"Initializing Gaussians using GCP model: {args.gcp_model_path}")
+            
+            # Load pre-trained GCP model
+            gcp_model = create_gcp_network(downsampling_factor=2)
+            checkpoint = torch.load(args.gcp_model_path, map_location='cuda')
+            if 'model_state_dict' in checkpoint:
+                gcp_model.load_state_dict(checkpoint['model_state_dict'])
+            else:
+                gcp_model.load_state_dict(checkpoint)
+            gcp_model.cuda()
+            gcp_model.eval()
+            
+            # Use first projection for GCP initialization
+            first_proj = input_projs[:, 0:1]  # [1, 1, H, W]
+            
+            with torch.no_grad():
+                gcp_centers, _, _ = gcp_model.predict_gaussian_centers(first_proj)
+                # gcp_centers: [1, N, 3], we want [N, 3]
+                gcp_centers = gcp_centers.squeeze(0)  # [N, 3]
+            
+            # Limit number of centers if specified
+            if args.num_init_gaussian > 0 and gcp_centers.shape[0] > args.num_init_gaussian:
+                # Randomly sample or take first N centers
+                indices = torch.randperm(gcp_centers.shape[0])[:args.num_init_gaussian]
+                gcp_centers = gcp_centers[indices]
+            
+            # Initialize from GCP predictions
+            gaussians.create_from_gcp(
+                gcp_centers, 
+                ini_density=0.04, 
+                ini_sigma=0.01, 
+                spatial_lr_scale=1,
+                volume_size=image_size
+            )
+            
+        else:
+            print("Initializing Gaussians using FBP method")
+            # Original FBP initialization
+            fbp_recon = ct_projector_train.backward_project(input_projs)
+            gaussians.create_from_fbp(
+                fbp_recon, 
+                air_threshold=0.05, 
+                ini_density=0.04, 
+                ini_sigma=0.01, 
+                spatial_lr_scale=1, 
+                num_samples=args.num_init_gaussian
+            )
+        
         gaussians.training_setup(opt)
 
         max_iter = args.max_iter
@@ -87,11 +135,26 @@ def evaluate_gaussian_fbp(dataset_folder, num_proj, save_dir, opt, args):
             del grid
             torch.cuda.empty_cache()
 
-            # Loss
+            # Loss - use combined loss function
             train_projs = ct_projector_train.forward_project(train_output.transpose(1,4).squeeze(1))
-            loss = mse_loss(train_projs, input_projs)
+            
+            if args.use_combined_loss:
+                # Use the combined loss from the paper: L_G = Σ_i (α * L_L2 + (1-α) * L_clL2)
+                loss_fn = CombinedGaussianLoss(alpha=args.loss_alpha)
+                loss, loss_dict = loss_fn(train_projs, input_projs)
+                
+                # Log detailed loss components
+                if iteration == 0 or (iteration + 1) % 500 == 0:
+                    print(f"  L2 Loss: {loss_dict['l2_loss']:.6f}, "
+                          f"Centerline Loss: {loss_dict['centerline_loss']:.6f}")
+            else:
+                # Original MSE loss
+                loss = mse_loss(train_projs, input_projs)
+            
             loss.backward()
-            train_psnr = -10 * torch.log10(loss).item()
+            
+            # Compute PSNR for monitoring
+            train_psnr = compute_psnr(train_projs, input_projs)
 
             # Densification
             if iteration < opt.densify_until_iter:
@@ -181,6 +244,19 @@ if __name__ == "__main__":
                        help='Range of models to train [start, end] (inclusive). Example: --model_range 900 1000')
     parser.add_argument('--dataset_folder', type=str, default="/kaggle/working/ToyData/",
                        help='Path to folder containing individual model .npy files')
+    
+    # GCP initialization arguments
+    parser.add_argument('--init_method', type=str, choices=['fbp', 'gcp'], default='fbp',
+                       help='Initialization method: fbp (Filtered Back Projection) or gcp (Gaussian Center Predictor)')
+    parser.add_argument('--gcp_model_path', type=str, default=None,
+                       help='Path to pre-trained GCP model for initialization')
+    
+    # Loss function arguments
+    parser.add_argument('--use_combined_loss', action='store_true',
+                       help='Use the combined loss function from the paper (L2 + centerline loss)')
+    parser.add_argument('--loss_alpha', type=float, default=0.5,
+                       help='Weight for L2 loss in combined loss function (1-alpha for centerline loss)')
+    
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
 
@@ -188,4 +264,4 @@ if __name__ == "__main__":
     dataset_path = args.dataset_folder
     save_dir = "/kaggle/working/results/"
 
-    evaluate_gaussian_fbp(dataset_path, args.num_proj, save_dir, op.extract(args), args)
+    evaluate_gaussian(dataset_path, args.num_proj, save_dir, op.extract(args), args)
